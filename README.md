@@ -36,6 +36,24 @@ pip install -e .
 - Python 3.8+
 - Anthropic API key (get one at https://console.anthropic.com/)
 
+## Development / Virtual Environment
+
+For development it's recommended to create an isolated virtual environment in the project directory and install the package in editable mode.
+
+```bash
+# Create a venv named .venv
+python3 -m venv .venv
+
+# Activate (bash/zsh)
+source .venv/bin/activate
+
+# Upgrade packaging tools and install in editable mode
+python -m pip install --upgrade pip setuptools wheel
+pip install -e .
+```
+
+If you're using `zsh` on macOS (default), the `source .venv/bin/activate` command will put you into the virtual environment; run `deactivate` to exit.
+
 ## Usage
 
 ### 1. Batch Process (Recommended)
