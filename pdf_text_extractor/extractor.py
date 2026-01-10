@@ -5,6 +5,10 @@ Core text extraction functionality using Claude's vision capabilities.
 import base64
 from anthropic import Anthropic
 import fitz  # PyMuPDF
+from io import BytesIO
+from PIL import Image
+import base64 as _base64
+import sys
 
 
 def pdf_to_images(pdf_path):
@@ -80,18 +84,19 @@ Text:"""
 
 
 def extract_pdf_text(pdf_path, output_path, api_key, progress_callback=None):
-    """
-    Extract text from PDF using Claude's vision capabilities.
+    return extract_pdf_text_with_mode(pdf_path, output_path, api_key=api_key, progress_callback=progress_callback, mode='claude')
 
-    Args:
-        pdf_path: Path to input PDF
-        output_path: Path to output text file
-        api_key: Anthropic API key
-        progress_callback: Optional callback function(page_num, total_pages)
+
+def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_callback=None, mode='claude'):
+    """
+    Extract text from PDF using different modes.
+
+    mode: 'claude' (default) or 'spacy' (local spaCy/layout-based OCR)
+    If mode == 'claude', `api_key` must be provided. If mode == 'spacy', no API key is required,
+    but optional local OCR/layout libraries improve results.
     """
 
-    # Initialize Claude client
-    client = Anthropic(api_key=api_key)
+    mode = (mode or 'claude').lower()
 
     # Convert PDF to images
     images = pdf_to_images(pdf_path)
@@ -99,12 +104,83 @@ def extract_pdf_text(pdf_path, output_path, api_key, progress_callback=None):
 
     all_text = []
 
-    for i, img_base64 in enumerate(images):
-        if progress_callback:
-            progress_callback(i + 1, total_pages)
+    if mode == 'claude':
+        if not api_key:
+            raise ValueError('api_key is required when mode="claude"')
 
-        text = extract_text_from_page(client, img_base64, i)
-        all_text.append(f"=== PAGE {i + 1} ===\n{text}")
+        # Initialize Claude client
+        client = Anthropic(api_key=api_key)
+
+        for i, img_base64 in enumerate(images):
+            if progress_callback:
+                progress_callback(i + 1, total_pages)
+
+            text = extract_text_from_page(client, img_base64, i)
+            all_text.append(f"=== PAGE {i + 1} ===\n{text}")
+
+    elif mode in ('spacy', 'local'):
+        # Try to use layoutparser/spacy/pytesseract if available, else fall back to PyMuPDF's text extraction
+        try:
+            import pytesseract
+            have_pytesseract = True
+        except Exception:
+            have_pytesseract = False
+
+        try:
+            import layoutparser as lp  # optional
+            have_layoutparser = True
+        except Exception:
+            have_layoutparser = False
+
+        for i, img_base64 in enumerate(images):
+            if progress_callback:
+                progress_callback(i + 1, total_pages)
+
+            # Decode image
+            img_bytes = _base64.b64decode(img_base64)
+            img = Image.open(BytesIO(img_bytes)).convert('RGB')
+
+            page_text = None
+
+            # Preferred approach: try layoutparser + pytesseract (if available)
+            if have_layoutparser and have_pytesseract:
+                try:
+                    # Use layoutparser to detect text regions and pytesseract to OCR them
+                    # Note: layoutparser models and OCR backends are optional; if this block
+                    # fails, we fall back to pytesseract on the full image below.
+                    lp_model = lp.Detectron2LayoutModel('lp://PubLayNet/faster_rcnn_R_50_FPN_3x/config')
+                    layout = lp_model.detect(img)
+                    # If layoutparser returns regions, OCR each region and join
+                    texts = []
+                    for block in layout:
+                        x1, y1, x2, y2 = map(int, [block.block.x1, block.block.y1, block.block.x2, block.block.y2])
+                        region = img.crop((x1, y1, x2, y2))
+                        texts.append(pytesseract.image_to_string(region))
+                    page_text = "\n".join(t.strip() for t in texts if t and t.strip())
+                except Exception:
+                    page_text = None
+
+            elif have_pytesseract:
+                try:
+                    page_text = pytesseract.image_to_string(img)
+                except Exception:
+                    page_text = None
+
+            # Ultimate fallback: try PyMuPDF's builtin text extraction directly from the PDF
+            if not page_text:
+                try:
+                    doc = fitz.open(pdf_path)
+                    # Extract text for page i
+                    page = doc[i]
+                    page_text = page.get_text("text")
+                    doc.close()
+                except Exception as e:
+                    page_text = f"[Error extracting page {i + 1}: {e}]"
+
+            all_text.append(f"=== PAGE {i + 1} ===\n{page_text}")
+
+    else:
+        raise ValueError(f'Unknown extraction mode: {mode}')
 
     # Write output
     output_text = "\n\n".join(all_text)

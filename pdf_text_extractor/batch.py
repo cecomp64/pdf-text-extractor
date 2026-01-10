@@ -6,7 +6,7 @@ import sys
 import os
 from pathlib import Path
 import fitz  # PyMuPDF
-from .extractor import extract_pdf_text
+from .extractor import extract_pdf_text_with_mode
 from .injector import inject_text_to_pdf
 
 
@@ -56,7 +56,7 @@ def estimate_cost(pdf_files, skip_existing=True):
     return total_pdfs, len(pdfs_to_process), total_pages, estimated_cost
 
 
-def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_confirm=False):
+def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_confirm=False, mode='claude'):
     """
     Batch process all PDFs in a directory tree.
 
@@ -90,6 +90,7 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
     print()
     print(f"Mode: {'OVERWRITE originals' if overwrite else 'Create new files (*_searchable.pdf)'}")
     print(f"Skip existing: {'Yes' if skip_existing else 'No'}")
+    print(f"Extraction mode: {mode}")
     print("=" * 60)
     print()
 
@@ -149,7 +150,7 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
             def progress(page, total):
                 print(f"    Page {page}/{total}", end='\r', flush=True)
 
-            extract_pdf_text(str(pdf_file), str(txt_file), api_key, progress)
+            extract_pdf_text_with_mode(str(pdf_file), str(txt_file), api_key=api_key, progress_callback=progress, mode=mode)
             print(f"  ✓ Text extracted: {txt_file.name}                    ")
 
             # Inject into PDF
@@ -241,6 +242,13 @@ Environment Variables:
     )
 
     parser.add_argument(
+        '--mode',
+        choices=['claude', 'spacy', 'local'],
+        default='claude',
+        help='Extraction mode: "claude" (default) uses Anthropic; "spacy" uses local layout/OCR tools'
+    )
+
+    parser.add_argument(
         '--yes', '-y',
         action='store_true',
         help='Skip confirmation prompt (auto-confirm)'
@@ -248,11 +256,11 @@ Environment Variables:
 
     args = parser.parse_args()
 
-    # Get API key
+    # Get API key (only required for Claude mode)
     api_key = args.api_key or os.environ.get('ANTHROPIC_API_KEY')
 
-    if not api_key:
-        print("Error: ANTHROPIC_API_KEY environment variable not set", file=sys.stderr)
+    if args.mode == 'claude' and not api_key:
+        print("Error: ANTHROPIC_API_KEY environment variable not set (required for mode=claude)", file=sys.stderr)
         print("Set it with: export ANTHROPIC_API_KEY='your-key-here'", file=sys.stderr)
         print("Or pass with: --api-key YOUR_KEY", file=sys.stderr)
         sys.exit(1)
@@ -280,7 +288,8 @@ Environment Variables:
             api_key,
             overwrite=args.overwrite,
             skip_existing=not args.no_skip,
-            auto_confirm=args.yes
+            auto_confirm=args.yes,
+            mode=args.mode
         )
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")
