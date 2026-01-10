@@ -72,9 +72,10 @@ pdftotext searchable.pdf - | head -20
 
 ## Cost Estimate
 
-- ~$0.003 per page
-- 100-page document ≈ $0.30
-- 1000-page archive ≈ $3.00
+- ~$0.018 per page (Claude Sonnet 4.5)
+- 100-page document ≈ $1.80
+- 1000-page archive ≈ $18.00
+- Use Gemini mode for lower cost (~$0.0001/page)
 
 ## Tips
 

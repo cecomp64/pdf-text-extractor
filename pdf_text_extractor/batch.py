@@ -6,8 +6,12 @@ import sys
 import os
 from pathlib import Path
 import fitz  # PyMuPDF
+from dotenv import load_dotenv
 from .extractor import extract_pdf_text_with_mode, contains_api_error
 from .injector import inject_text_to_pdf
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def find_pdfs(directory):
@@ -16,9 +20,14 @@ def find_pdfs(directory):
     return sorted(path.rglob("*.pdf"))
 
 
-def estimate_cost(pdf_files, skip_existing=True):
+def estimate_cost(pdf_files, skip_existing=True, mode='claude'):
     """
     Estimate the cost of processing PDFs.
+
+    Args:
+        pdf_files: List of PDF file paths
+        skip_existing: Whether to skip files that already have output
+        mode: Extraction mode ('claude', 'gemini', 'spacy', or 'local')
 
     Returns:
         (total_pdfs, pdfs_to_process, pdfs_with_errors, total_pages, estimated_cost)
@@ -68,16 +77,37 @@ def estimate_cost(pdf_files, skip_existing=True):
                 # Assume average of 5 pages if we can't open it
                 total_pages += 5
 
-    # Cost calculation: $3 per 1000 input tokens, ~750 tokens per page (image)
-    # Plus $15 per 1M output tokens, ~500 tokens output per page
-    # Approximate: $0.003 per page all-in
-    cost_per_page = 0.003
+    # Cost calculation based on mode:
+    #
+    # Claude Sonnet 4.5:
+    #   Input: $3 per million tokens, ~2,000 tokens per page (2x resolution image)
+    #   Output: $15 per million tokens, ~750 tokens per page (extracted text)
+    #   Input cost: 2,000 × $3/1M = $0.006
+    #   Output cost: 750 × $15/1M = $0.01125
+    #   Total: ~$0.018 per page
+    #
+    # Gemini 2.0 Flash:
+    #   Input: $0.075 per million tokens, ~2,000 tokens per page
+    #   Output: $0.30 per million tokens, ~750 tokens per page
+    #   Input cost: 2,000 × $0.075/1M = $0.00015
+    #   Output cost: 750 × $0.30/1M = $0.000225
+    #   Total: ~$0.0001 per page (rounded to 4 decimal places)
+    #
+    # spaCy/local: Free (no API cost)
+
+    if mode == 'gemini':
+        cost_per_page = 0.0001
+    elif mode in ['spacy', 'local']:
+        cost_per_page = 0.0
+    else:  # claude (default)
+        cost_per_page = 0.018
+
     estimated_cost = total_pages * cost_per_page
 
     return total_pdfs, len(pdfs_to_process), pdfs_with_errors, total_pages, estimated_cost
 
 
-def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_confirm=False, mode='claude'):
+def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_confirm=False, mode='claude', output_format='markdown', save_plain=False):
     """
     Batch process all PDFs in a directory tree.
 
@@ -87,6 +117,9 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
         overwrite: If True, overwrite original PDFs. If False, create *_searchable.pdf
         skip_existing: If True, skip PDFs that already have text files
         auto_confirm: If True, skip confirmation prompt
+        mode: Extraction mode ('claude' or 'spacy')
+        output_format: Output format ('markdown' or 'plain')
+        save_plain: If True, also save plain text version for PDF injection
     """
 
     pdf_files = find_pdfs(directory)
@@ -96,7 +129,7 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
         return
 
     # Estimate cost
-    total_pdfs, pdfs_to_process, pdfs_with_errors, total_pages, estimated_cost = estimate_cost(pdf_files, skip_existing)
+    total_pdfs, pdfs_to_process, pdfs_with_errors, total_pages, estimated_cost = estimate_cost(pdf_files, skip_existing, mode)
 
     # Show summary
     print()
@@ -114,6 +147,9 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
     print(f"Mode: {'OVERWRITE originals' if overwrite else 'Create new files (*_searchable.pdf)'}")
     print(f"Skip existing: {'Yes' if skip_existing else 'No'}")
     print(f"Extraction mode: {mode}")
+    print(f"Output format: {output_format}")
+    if save_plain and output_format == 'markdown':
+        print(f"Plain text: Will save .txt files for PDF injection")
     print("=" * 60)
 
     # Show files with errors if any
@@ -148,12 +184,21 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
     processed = 0
     skipped = 0
     errors = 0
+    total_pages_processed = 0
+    total_processing_time = 0.0
+    file_timings = []  # Track (filename, pages, time) for each file
 
     for i, pdf_file in enumerate(pdf_files, 1):
         print(f"[{i}/{len(pdf_files)}] {pdf_file.relative_to(directory)}")
 
-        # Determine output paths
-        txt_file = pdf_file.with_suffix('.txt')
+        # Determine output paths based on format
+        if output_format == 'markdown':
+            main_output_file = pdf_file.with_suffix('.md')
+            # For injection, we need plain text
+            txt_file = pdf_file.with_suffix('.txt') if save_plain else None
+        else:
+            main_output_file = pdf_file.with_suffix('.txt')
+            txt_file = main_output_file  # Same file for plain format
 
         if overwrite:
             # Create temp file, then replace original
@@ -164,23 +209,23 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
             output_pdf = pdf_file.with_stem(f"{pdf_file.stem}_searchable")
             final_pdf = output_pdf
 
-        # Check if already processed
-        if skip_existing and txt_file.exists():
-            # Check if the text file contains API errors
+        # Check if already processed (check main output file)
+        if skip_existing and main_output_file.exists():
+            # Check if the file contains API errors
             try:
-                with open(txt_file, 'r', encoding='utf-8') as f:
+                with open(main_output_file, 'r', encoding='utf-8') as f:
                     content = f.read()
                 if contains_api_error(content):
                     # File has errors, reprocess it
-                    print(f"  ⚠ Reprocessing (API error detected in existing text file)")
+                    print(f"  ⚠ Reprocessing (API error detected in existing file)")
                 else:
                     # File is good, skip it
-                    print(f"  ⊙ Skipping (text file exists)")
+                    print(f"  ⊙ Skipping (output file exists)")
                     skipped += 1
                     continue
             except Exception:
                 # Can't read file, better to reprocess
-                print(f"  ⚠ Reprocessing (cannot read existing text file)")
+                print(f"  ⚠ Reprocessing (cannot read existing file)")
 
         if skip_existing and final_pdf.exists() and final_pdf != pdf_file:
             print(f"  ⊙ Skipping (searchable PDF exists)")
@@ -194,12 +239,29 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
             def progress(page, total):
                 print(f"    Page {page}/{total}", end='\r', flush=True)
 
-            extract_pdf_text_with_mode(str(pdf_file), str(txt_file), api_key=api_key, progress_callback=progress, mode=mode)
-            print(f"  ✓ Text extracted: {txt_file.name}                    ")
+            # Determine which file to use for PDF injection
+            injection_file = txt_file if txt_file else main_output_file
 
-            # Inject into PDF
+            num_pages, page_timings, file_time = extract_pdf_text_with_mode(
+                str(pdf_file),
+                str(main_output_file),
+                api_key=api_key,
+                progress_callback=progress,
+                mode=mode,
+                output_format=output_format,
+                plain_output_path=str(txt_file) if txt_file and txt_file != main_output_file else None
+            )
+            total_pages_processed += num_pages
+            total_processing_time += file_time
+            file_timings.append((pdf_file.name, num_pages, file_time))
+
+            print(f"  ✓ Text extracted: {main_output_file.name} ({file_time:.1f}s, {num_pages} pages)          ")
+            if txt_file and txt_file != main_output_file:
+                print(f"  ✓ Plain text saved: {txt_file.name}                    ")
+
+            # Inject into PDF (use plain text file if available, otherwise main output)
             print(f"  → Creating searchable PDF...")
-            inject_text_to_pdf(str(pdf_file), str(output_pdf), str(txt_file))
+            inject_text_to_pdf(str(pdf_file), str(output_pdf), str(injection_file))
 
             # If overwriting, replace original
             if overwrite:
@@ -234,6 +296,19 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
     print(f"  Skipped:   {skipped}")
     print(f"  Errors:    {errors}")
     print(f"  Total:     {len(pdf_files)}")
+    if total_pages_processed > 0:
+        print(f"\n  Total pages processed: {total_pages_processed}")
+        print(f"  Total processing time: {total_processing_time:.1f}s ({total_processing_time / 60:.1f} min)")
+        avg_per_page = total_processing_time / total_pages_processed
+        print(f"  Average time per page: {avg_per_page:.1f}s")
+        if file_timings:
+            # Show slowest file
+            slowest_file = max(file_timings, key=lambda x: x[2] / x[1] if x[1] > 0 else 0)
+            fastest_file = min(file_timings, key=lambda x: x[2] / x[1] if x[1] > 0 else float('inf'))
+            if slowest_file[1] > 0:
+                print(f"  Slowest file: {slowest_file[0]} ({slowest_file[2] / slowest_file[1]:.1f}s/page)")
+            if fastest_file[1] > 0:
+                print(f"  Fastest file: {fastest_file[0]} ({fastest_file[2] / fastest_file[1]:.1f}s/page)")
 
 
 def main():
@@ -246,20 +321,36 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Process all PDFs, create new *_searchable.pdf files
+  # Process all PDFs with markdown output using Claude (default)
   pdf-batch /path/to/pdfs
+
+  # Use Google Gemini instead of Claude
+  export GOOGLE_API_KEY='your-key-here'
+  pdf-batch --mode=gemini /path/to/pdfs
+
+  # Generate both markdown and plain text files
+  pdf-batch --save-plain /path/to/pdfs
+
+  # Use plain text format only
+  pdf-batch --format=plain /path/to/pdfs
 
   # Overwrite original PDFs with searchable versions
   pdf-batch --overwrite /path/to/pdfs
 
-  # Reprocess everything, even if text files exist
+  # Reprocess everything, even if files exist
   pdf-batch --no-skip /path/to/pdfs
 
   # Skip confirmation prompt (auto-confirm)
   pdf-batch --yes /path/to/pdfs
 
+  # Use local mode (no API key needed)
+  pdf-batch --mode=spacy /path/to/pdfs
+
 Environment Variables:
-  ANTHROPIC_API_KEY    Required. Your Anthropic API key.
+  ANTHROPIC_API_KEY    Required for mode=claude. Your Anthropic API key.
+  GOOGLE_API_KEY       Required for mode=gemini. Your Google API key.
+
+API keys can also be loaded from a .env file in the current directory.
         '''
     )
 
@@ -287,9 +378,22 @@ Environment Variables:
 
     parser.add_argument(
         '--mode',
-        choices=['claude', 'spacy', 'local'],
+        choices=['claude', 'gemini', 'spacy', 'local'],
         default='claude',
-        help='Extraction mode: "claude" (default) uses Anthropic; "spacy" uses local layout/OCR tools'
+        help='Extraction mode: "claude" (default) uses Anthropic, "gemini" uses Google, "spacy" uses local layout/OCR'
+    )
+
+    parser.add_argument(
+        '--format',
+        choices=['markdown', 'plain'],
+        default='markdown',
+        help='Output format: "markdown" (default) preserves structure; "plain" for simple text'
+    )
+
+    parser.add_argument(
+        '--save-plain',
+        action='store_true',
+        help='When using markdown format, also save plain .txt files for PDF injection'
     )
 
     parser.add_argument(
@@ -300,12 +404,21 @@ Environment Variables:
 
     args = parser.parse_args()
 
-    # Get API key (only required for Claude mode)
-    api_key = args.api_key or os.environ.get('ANTHROPIC_API_KEY')
+    # Get API key based on mode
+    if args.mode == 'gemini':
+        api_key = args.api_key or os.environ.get('GOOGLE_API_KEY')
+    else:
+        api_key = args.api_key or os.environ.get('ANTHROPIC_API_KEY')
 
+    # Require API key for AI modes
     if args.mode == 'claude' and not api_key:
         print("Error: ANTHROPIC_API_KEY environment variable not set (required for mode=claude)", file=sys.stderr)
         print("Set it with: export ANTHROPIC_API_KEY='your-key-here'", file=sys.stderr)
+        print("Or pass with: --api-key YOUR_KEY", file=sys.stderr)
+        sys.exit(1)
+    elif args.mode == 'gemini' and not api_key:
+        print("Error: GOOGLE_API_KEY environment variable not set (required for mode=gemini)", file=sys.stderr)
+        print("Set it with: export GOOGLE_API_KEY='your-key-here'", file=sys.stderr)
         print("Or pass with: --api-key YOUR_KEY", file=sys.stderr)
         sys.exit(1)
 
@@ -333,7 +446,9 @@ Environment Variables:
             overwrite=args.overwrite,
             skip_existing=not args.no_skip,
             auto_confirm=args.yes,
-            mode=args.mode
+            mode=args.mode,
+            output_format=args.format,
+            save_plain=args.save_plain
         )
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")

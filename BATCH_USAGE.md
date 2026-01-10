@@ -152,12 +152,14 @@ Before batch processing, estimate the cost:
 # Count total pages in your archive
 find Seventies -name "*.pdf" -exec pdfinfo {} \; | grep Pages | awk '{sum+=$2} END {print sum " pages"}'
 
-# Multiply by $0.003 per page
+# Multiply by $0.018 per page (Claude Sonnet 4.5)
 ```
 
 Example:
-- 500 pages × $0.003 = $1.50
-- 2000 pages × $0.003 = $6.00
+- 500 pages × $0.018 = $9.00
+- 2000 pages × $0.018 = $36.00
+
+**Tip:** Use `--mode=gemini` for much lower cost (~$0.0001/page)
 
 ## File Organization
 
