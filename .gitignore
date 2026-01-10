@@ -43,3 +43,5 @@ htmlcov/
 Thumbs.db
 
 examples/samples/
+
+.env
