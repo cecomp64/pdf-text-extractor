@@ -21,20 +21,34 @@ This tool uses Claude's vision capabilities to "read" PDFs like a human would, p
 
 ## Installation
 
+### Basic Installation (Claude mode only)
+
 ```bash
 pip install .
 ```
 
-Or install in development mode:
+### Installation with Local Mode Support
 
 ```bash
-pip install -e .
+# Install with local mode dependencies
+pip install ".[local]"
+
+# Download the spaCy language model
+python -m spacy download en_core_web_sm
+```
+
+### Development Installation
+
+```bash
+pip install -e ".[local]"
+python -m spacy download en_core_web_sm
 ```
 
 ## Requirements
 
-- Python 3.8+
-- Anthropic API key (get one at https://console.anthropic.com/)
+- Python 3.10+ (required for spacy-layout)
+- Anthropic API key for Claude mode (get one at https://console.anthropic.com/)
+- For local mode: spacy-layout library (see installation below)
 
 ## Development / Virtual Environment
 
@@ -199,3 +213,37 @@ MIT
 Built with:
 - [Anthropic Claude AI](https://www.anthropic.com/) for vision-based text extraction
 - [PyMuPDF](https://pymupdf.readthedocs.io/) for PDF manipulation
+
+## Local Mode (No API Key Required)
+
+For offline processing without using the Claude API, you can use the local/spacy mode which leverages the spacy-layout library for layout-aware text extraction with OCR support:
+
+```bash
+# Extract text using local mode (no API key needed)
+pdf-extract input.pdf output.txt --mode=spacy
+
+# Batch process using local mode
+pdf-batch --mode=spacy /path/to/pdfs
+```
+
+### Install spaCy Layout for Local Mode
+
+The local mode requires spacy-layout and the spaCy language model:
+
+```shell
+# Activate venv then install dependencies
+source .venv/bin/activate
+pip install spacy-layout
+python -m spacy download en_core_web_sm
+```
+
+**Features of Local Mode:**
+- Uses spacy-layout library for document structure understanding
+- Supports both PDFs with embedded text and scanned documents
+- Integrated OCR capabilities via the Docling library
+- No API costs - completely offline processing
+- Layout-aware text extraction preserves document structure
+
+**When to Use Each Mode:**
+- **Claude Mode**: Best for complex layouts, poor quality scans, and highest accuracy
+- **Local Mode**: Good for offline processing, cost-free operation, and standard document quality

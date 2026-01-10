@@ -5,9 +5,6 @@ Core text extraction functionality using Claude's vision capabilities.
 import base64
 from anthropic import Anthropic
 import fitz  # PyMuPDF
-from io import BytesIO
-from PIL import Image
-import base64 as _base64
 import sys
 
 
@@ -91,22 +88,23 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
     """
     Extract text from PDF using different modes.
 
-    mode: 'claude' (default) or 'spacy' (local spaCy/layout-based OCR)
-    If mode == 'claude', `api_key` must be provided. If mode == 'spacy', no API key is required,
-    but optional local OCR/layout libraries improve results.
+    mode: 'claude' (default) or 'spacy'/'local' (layout-based extraction using spacy-layout)
+    If mode == 'claude', `api_key` must be provided. If mode == 'spacy'/'local', no API key is required.
+    The spacy mode uses the spacy-layout library with the en_core_web_sm model for layout-aware
+    text extraction from PDFs, including support for scanned documents via integrated OCR.
     """
 
     mode = (mode or 'claude').lower()
-
-    # Convert PDF to images
-    images = pdf_to_images(pdf_path)
-    total_pages = len(images)
 
     all_text = []
 
     if mode == 'claude':
         if not api_key:
             raise ValueError('api_key is required when mode="claude"')
+
+        # Convert PDF to images for Claude vision API
+        images = pdf_to_images(pdf_path)
+        total_pages = len(images)
 
         # Initialize Claude client
         client = Anthropic(api_key=api_key)
@@ -119,65 +117,44 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
             all_text.append(f"=== PAGE {i + 1} ===\n{text}")
 
     elif mode in ('spacy', 'local'):
-        # Try to use layoutparser/spacy/pytesseract if available, else fall back to PyMuPDF's text extraction
+        # Use spacy-layout for PDF text extraction with layout awareness
         try:
-            import pytesseract
-            have_pytesseract = True
-        except Exception:
-            have_pytesseract = False
+            import spacy
+            from spacy_layout import spaCyLayout
 
-        try:
-            import layoutparser as lp  # optional
-            have_layoutparser = True
-        except Exception:
-            have_layoutparser = False
+            nlp = spacy.load("en_core_web_sm")
+            layout = spaCyLayout(nlp)
 
-        for i, img_base64 in enumerate(images):
+            # Process the entire PDF with spaCyLayout
+            doc = layout(pdf_path)
+
+            # Get total pages for progress tracking
+            pdf_doc = fitz.open(pdf_path)
+            total_pages = len(pdf_doc)
+            pdf_doc.close()
+
+            # Extract text, preserving page structure
+            # spaCyLayout processes the whole document, so we need to split by pages
+            full_text = doc.text
+
+            # If the document has page breaks or we can identify pages
+            # For now, we'll treat it as a single extraction and format it
             if progress_callback:
-                progress_callback(i + 1, total_pages)
+                for i in range(total_pages):
+                    progress_callback(i + 1, total_pages)
 
-            # Decode image
-            img_bytes = _base64.b64decode(img_base64)
-            img = Image.open(BytesIO(img_bytes)).convert('RGB')
+            # Since spaCyLayout returns a single doc, we format it as one page
+            # or split by detected page boundaries if available
+            all_text.append(f"=== DOCUMENT ===\n{full_text}")
 
-            page_text = None
-
-            # Preferred approach: try layoutparser + pytesseract (if available)
-            if have_layoutparser and have_pytesseract:
-                try:
-                    # Use layoutparser to detect text regions and pytesseract to OCR them
-                    # Note: layoutparser models and OCR backends are optional; if this block
-                    # fails, we fall back to pytesseract on the full image below.
-                    lp_model = lp.Detectron2LayoutModel('lp://PubLayNet/faster_rcnn_R_50_FPN_3x/config')
-                    layout = lp_model.detect(img)
-                    # If layoutparser returns regions, OCR each region and join
-                    texts = []
-                    for block in layout:
-                        x1, y1, x2, y2 = map(int, [block.block.x1, block.block.y1, block.block.x2, block.block.y2])
-                        region = img.crop((x1, y1, x2, y2))
-                        texts.append(pytesseract.image_to_string(region))
-                    page_text = "\n".join(t.strip() for t in texts if t and t.strip())
-                except Exception:
-                    page_text = None
-
-            elif have_pytesseract:
-                try:
-                    page_text = pytesseract.image_to_string(img)
-                except Exception:
-                    page_text = None
-
-            # Ultimate fallback: try PyMuPDF's builtin text extraction directly from the PDF
-            if not page_text:
-                try:
-                    doc = fitz.open(pdf_path)
-                    # Extract text for page i
-                    page = doc[i]
-                    page_text = page.get_text("text")
-                    doc.close()
-                except Exception as e:
-                    page_text = f"[Error extracting page {i + 1}: {e}]"
-
-            all_text.append(f"=== PAGE {i + 1} ===\n{page_text}")
+        except ImportError as e:
+            raise ImportError(
+                "spacy-layout is required for local mode. Install with:\n"
+                "  pip install spacy-layout\n"
+                "  python -m spacy download en_core_web_sm"
+            ) from e
+        except Exception as e:
+            all_text.append(f"[Error extracting text: {e}]")
 
     else:
         raise ValueError(f'Unknown extraction mode: {mode}')
