@@ -6,7 +6,7 @@ import sys
 import os
 from pathlib import Path
 import fitz  # PyMuPDF
-from .extractor import extract_pdf_text_with_mode
+from .extractor import extract_pdf_text_with_mode, contains_api_error
 from .injector import inject_text_to_pdf
 
 
@@ -21,10 +21,11 @@ def estimate_cost(pdf_files, skip_existing=True):
     Estimate the cost of processing PDFs.
 
     Returns:
-        (total_pdfs, pdfs_to_process, total_pages, estimated_cost)
+        (total_pdfs, pdfs_to_process, pdfs_with_errors, total_pages, estimated_cost)
     """
     total_pdfs = len(pdf_files)
     pdfs_to_process = []
+    pdfs_with_errors = []
     total_pages = 0
 
     print("Analyzing PDFs for cost estimation...")
@@ -32,20 +33,40 @@ def estimate_cost(pdf_files, skip_existing=True):
     for pdf_file in pdf_files:
         # Check if already processed
         txt_file = pdf_file.with_suffix('.txt')
+        should_process = False
+
         if skip_existing and txt_file.exists():
-            continue
+            # Check if the text file contains API errors
+            try:
+                with open(txt_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                if contains_api_error(content):
+                    # File has errors, need to reprocess
+                    should_process = True
+                    pdfs_with_errors.append(pdf_file)
+                else:
+                    # File is good, skip it
+                    continue
+            except Exception:
+                # Can't read file, better to reprocess
+                should_process = True
+                pdfs_with_errors.append(pdf_file)
+        else:
+            # File doesn't exist or skip_existing is False
+            should_process = True
 
-        pdfs_to_process.append(pdf_file)
+        if should_process:
+            pdfs_to_process.append(pdf_file)
 
-        # Count pages
-        try:
-            doc = fitz.open(str(pdf_file))
-            page_count = len(doc)
-            doc.close()
-            total_pages += page_count
-        except Exception:
-            # Assume average of 5 pages if we can't open it
-            total_pages += 5
+            # Count pages
+            try:
+                doc = fitz.open(str(pdf_file))
+                page_count = len(doc)
+                doc.close()
+                total_pages += page_count
+            except Exception:
+                # Assume average of 5 pages if we can't open it
+                total_pages += 5
 
     # Cost calculation: $3 per 1000 input tokens, ~750 tokens per page (image)
     # Plus $15 per 1M output tokens, ~500 tokens output per page
@@ -53,7 +74,7 @@ def estimate_cost(pdf_files, skip_existing=True):
     cost_per_page = 0.003
     estimated_cost = total_pages * cost_per_page
 
-    return total_pdfs, len(pdfs_to_process), total_pages, estimated_cost
+    return total_pdfs, len(pdfs_to_process), pdfs_with_errors, total_pages, estimated_cost
 
 
 def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_confirm=False, mode='claude'):
@@ -75,7 +96,7 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
         return
 
     # Estimate cost
-    total_pdfs, pdfs_to_process, total_pages, estimated_cost = estimate_cost(pdf_files, skip_existing)
+    total_pdfs, pdfs_to_process, pdfs_with_errors, total_pages, estimated_cost = estimate_cost(pdf_files, skip_existing)
 
     # Show summary
     print()
@@ -84,6 +105,8 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
     print("=" * 60)
     print(f"Total PDFs found:        {total_pdfs}")
     print(f"Already processed:       {total_pdfs - pdfs_to_process}")
+    if pdfs_with_errors:
+        print(f"With API errors:         {len(pdfs_with_errors)} (will be reprocessed)")
     print(f"To be processed:         {pdfs_to_process}")
     print(f"Total pages:             {total_pages}")
     print(f"Estimated cost:          ${estimated_cost:.2f}")
@@ -92,6 +115,15 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
     print(f"Skip existing: {'Yes' if skip_existing else 'No'}")
     print(f"Extraction mode: {mode}")
     print("=" * 60)
+
+    # Show files with errors if any
+    if pdfs_with_errors:
+        print()
+        print(f"Files with API errors detected ({len(pdfs_with_errors)}):")
+        for pdf_file in pdfs_with_errors:
+            print(f"  ⚠ {pdf_file.relative_to(directory)}")
+        print("=" * 60)
+
     print()
 
     if pdfs_to_process == 0:
@@ -134,9 +166,21 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
 
         # Check if already processed
         if skip_existing and txt_file.exists():
-            print(f"  ⊙ Skipping (text file exists)")
-            skipped += 1
-            continue
+            # Check if the text file contains API errors
+            try:
+                with open(txt_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                if contains_api_error(content):
+                    # File has errors, reprocess it
+                    print(f"  ⚠ Reprocessing (API error detected in existing text file)")
+                else:
+                    # File is good, skip it
+                    print(f"  ⊙ Skipping (text file exists)")
+                    skipped += 1
+                    continue
+            except Exception:
+                # Can't read file, better to reprocess
+                print(f"  ⚠ Reprocessing (cannot read existing text file)")
 
         if skip_existing and final_pdf.exists() and final_pdf != pdf_file:
             print(f"  ⊙ Skipping (searchable PDF exists)")

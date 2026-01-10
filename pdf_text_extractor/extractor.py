@@ -6,6 +6,37 @@ import base64
 from anthropic import Anthropic
 import fitz  # PyMuPDF
 import sys
+import re
+
+
+def contains_api_error(text):
+    """
+    Check if text contains API error messages.
+
+    Returns True if an API error is detected, False otherwise.
+    """
+    if not text:
+        return False
+
+    # Check for error patterns
+    error_patterns = [
+        r'\[Error extracting page \d+:.*Error code:.*\]',
+        r'Error code: \d+',
+        r'invalid_request_error',
+        r'authentication_error',
+        r'permission_error',
+        r'rate_limit_error',
+        r'api_error',
+        r'overloaded_error',
+        r'credit balance is too low',
+        r'Your credit balance is too low to access the Anthropic API',
+    ]
+
+    for pattern in error_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+
+    return False
 
 
 def pdf_to_images(pdf_path):
@@ -115,6 +146,10 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
 
             text = extract_text_from_page(client, img_base64, i)
             all_text.append(f"=== PAGE {i + 1} ===\n{text}")
+
+            # Check for API errors after each page
+            if contains_api_error(text):
+                raise RuntimeError(f"API error detected on page {i + 1}. Stopping extraction to prevent incomplete results. Error: {text}")
 
     elif mode in ('spacy', 'local'):
         # Use spacy-layout for PDF text extraction with layout awareness
