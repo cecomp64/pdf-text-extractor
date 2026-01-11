@@ -73,26 +73,34 @@ def extract_text_from_page_gemini(client, image_base64, page_num, output_format=
     """
 
     if output_format == 'markdown':
-        prompt = """Please extract all the text from this scanned document page and format it as markdown.
+        prompt = """You are a precise document transcription tool. Extract all text from this scanned document page and output it as properly formatted markdown.
 
-Rules:
-- Output the content in markdown format
-- Preserve the document structure (headings, sections, lists, etc.)
-- Use appropriate markdown syntax:
-  * # for main headings, ## for subheadings, ### for sub-subheadings, etc.
-  * - or * for bullet points
-  * 1. 2. 3. for numbered lists
-  * **bold** for emphasized text if applicable
-  * Tables should use markdown table syntax if present
-  * Code blocks with ``` if code is present
-  * > for blockquotes if applicable
-- Maintain paragraph breaks with blank lines between paragraphs
-- Include all text exactly as it appears
-- Infer the document structure from visual cues (font size, weight, indentation, etc.)
-- Do not add any commentary or explanations
-- Just output the formatted markdown content
+CRITICAL FORMATTING RULES:
+1. Analyze visual hierarchy (font size, weight, position) to determine heading levels
+2. Use markdown heading syntax strictly:
+   - # for main/title headings (largest font)
+   - ## for section headings (second largest)
+   - ### for subsection headings (third largest)
+   - And so on for smaller headings
+3. Format lists correctly:
+   - Use * or - for unordered lists
+   - Use 1. 2. 3. for ordered/numbered lists
+   - Maintain proper indentation for nested lists
+4. Use **bold** for any visually emphasized or bold text
+5. Use *italic* for any italicized text
+6. Format tables using proper markdown table syntax with | separators and alignment
+7. Use ``` for code blocks if any code is present
+8. Use > for blockquotes if applicable
+9. Maintain paragraph breaks with blank lines between paragraphs
+10. Preserve the exact text content - no changes, additions, or omissions
 
-Text:"""
+OUTPUT REQUIREMENTS:
+- Output ONLY the markdown-formatted text
+- Do NOT include explanations, commentary, or meta-text
+- Do NOT prefix with "Text:" or similar labels
+- Start directly with the content
+
+Begin extraction:"""
     else:
         prompt = """Please extract all the text from this scanned document page.
 
@@ -106,19 +114,25 @@ Rules:
 Text:"""
 
     try:
-        import google.generativeai as genai
         from PIL import Image
         import io
+        import warnings
 
         # Decode base64 image
         img_data = base64.b64decode(image_base64)
         image = Image.open(io.BytesIO(img_data))
 
-        # Generate content
-        response = client.generate_content([prompt, image])
+        # Generate content using new google-genai API
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-image',
+            contents=[prompt, image]
+        )
 
-        # Extract text from response
-        text = response.text
+        # Extract text from response, suppressing non-text parts warning
+        # Gemini may include inline_data parts which we don't need for text extraction
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*non-text parts.*")
+            text = response.text
 
         # Clean up any "Text:" prefix if Gemini added it
         if text.startswith("Text:"):
@@ -294,10 +308,9 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
         images = pdf_to_images(pdf_path)
         total_pages = len(images)
 
-        # Initialize Gemini client
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        client = genai.GenerativeModel('gemini-2.0-flash-exp')
+        # Initialize Gemini client with new google-genai SDK
+        from google import genai
+        client = genai.Client(api_key=api_key)
 
         for i, img_base64 in enumerate(images):
             page_start = time.time()

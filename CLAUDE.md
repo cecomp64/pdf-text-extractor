@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Python CLI tool for vision-based PDF text extraction using AI models (Claude Sonnet 4.5, Gemini 2.0 Flash) or local OCR (spaCy Layout). Converts scanned PDFs to searchable documents by extracting text via AI vision APIs and injecting invisible text layers back into PDFs.
+A Python CLI tool for vision-based PDF text extraction using AI models (Claude Sonnet 4.5, Gemini 2.5 Flash Image) or local OCR (spaCy Layout). Converts scanned PDFs to searchable documents by extracting text via AI vision APIs and injecting invisible text layers back into PDFs.
 
 ## Development Setup
 
@@ -90,10 +90,10 @@ python -m build
 **[pdf_text_extractor/extractor.py](pdf_text_extractor/extractor.py)** - Core text extraction engine
 - `pdf_to_images()` - Converts PDF pages to base64-encoded PNG images at 2x resolution using PyMuPDF
 - `extract_text_from_page()` - Claude Sonnet 4.5 vision API integration with markdown/plain text prompts
-- `extract_text_from_page_gemini()` - Gemini 2.0 Flash vision API integration
+- `extract_text_from_page_gemini()` - Gemini 2.5 Flash Image vision API integration (uses google-genai SDK)
 - `extract_pdf_text_with_mode()` - Main extraction orchestrator supporting three modes:
   - `claude`: Anthropic Claude Sonnet 4.5 vision (~$0.018/page)
-  - `gemini`: Google Gemini 2.0 Flash (~$0.0001/page)
+  - `gemini`: Google Gemini 2.5 Flash Image (very low cost, higher quota limits)
   - `spacy`/`local`: Offline spaCy Layout OCR (no API cost)
 - `contains_api_error()` - Detects API errors in extracted text using regex patterns (used for auto-retry logic in batch mode)
 - **Output formats**: `markdown` (preserves structure with headings/lists) or `plain` (simple text)
@@ -161,8 +161,8 @@ inject_text_to_pdf('input.pdf', 'searchable.pdf', 'output.txt')
 - **Recommended approach**: Create a `.env` file from `.env.example` and add your API keys there
 
 ### Model Versions
-- **Claude**: Uses `claude-sonnet-4-5-20250929` hardcoded in [extractor.py:178](pdf_text_extractor/extractor.py#L178)
-- **Gemini**: Uses `gemini-2.0-flash-exp` hardcoded in [extractor.py:289](pdf_text_extractor/extractor.py#L289)
+- **Claude**: Uses `claude-sonnet-4-5-20250929` hardcoded in [extractor.py:179](pdf_text_extractor/extractor.py#L179)
+- **Gemini**: Uses `gemini-2.5-flash-image` with the new `google-genai` SDK (v1.57.0+) - provides higher quota limits than the 2.0 experimental model
 - Update these model IDs when new versions are released
 
 ### Image Resolution
