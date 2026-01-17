@@ -107,19 +107,19 @@ def estimate_cost(pdf_files, skip_existing=True, mode='claude'):
     return total_pdfs, len(pdfs_to_process), pdfs_with_errors, total_pages, estimated_cost
 
 
-def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_confirm=False, mode='claude', output_format='markdown', save_plain=False):
+def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_confirm=False, mode='claude', output_format='markdown', ocr_only=False):
     """
     Batch process all PDFs in a directory tree.
 
     Args:
         directory: Root directory to search
-        api_key: Anthropic API key
+        api_key: Anthropic API key (not needed if ocr_only=True)
         overwrite: If True, overwrite original PDFs. If False, create *_searchable.pdf
         skip_existing: If True, skip PDFs that already have text files
         auto_confirm: If True, skip confirmation prompt
-        mode: Extraction mode ('claude' or 'spacy')
+        mode: Extraction mode ('claude', 'gemini', or 'spacy')
         output_format: Output format ('markdown' or 'plain')
-        save_plain: If True, also save plain text version for PDF injection
+        ocr_only: If True, only create searchable PDFs using OCR (skip text extraction)
     """
 
     pdf_files = find_pdfs(directory)
@@ -128,8 +128,31 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
         print(f"No PDF files found in {directory}")
         return
 
-    # Estimate cost
-    total_pdfs, pdfs_to_process, pdfs_with_errors, total_pages, estimated_cost = estimate_cost(pdf_files, skip_existing, mode)
+    # Estimate cost (only if not OCR-only mode)
+    if not ocr_only:
+        total_pdfs, pdfs_to_process, pdfs_with_errors, total_pages, estimated_cost = estimate_cost(pdf_files, skip_existing, mode)
+    else:
+        # In OCR-only mode, process all PDFs or skip based on searchable PDF existence
+        total_pdfs = len(pdf_files)
+        pdfs_to_process = 0
+        pdfs_with_errors = []
+        total_pages = 0
+        estimated_cost = 0.0
+
+        for pdf_file in pdf_files:
+            output_pdf = pdf_file.with_stem(f"{pdf_file.stem}_searchable") if not overwrite else pdf_file
+
+            if skip_existing and output_pdf.exists() and output_pdf != pdf_file:
+                continue
+
+            pdfs_to_process += 1
+            # Count pages for progress tracking
+            try:
+                doc = fitz.open(str(pdf_file))
+                total_pages += len(doc)
+                doc.close()
+            except Exception:
+                total_pages += 5  # Assume 5 pages if can't open
 
     # Show summary
     print()
@@ -142,14 +165,16 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
         print(f"With API errors:         {len(pdfs_with_errors)} (will be reprocessed)")
     print(f"To be processed:         {pdfs_to_process}")
     print(f"Total pages:             {total_pages}")
-    print(f"Estimated cost:          ${estimated_cost:.2f}")
+    if not ocr_only:
+        print(f"Estimated cost:          ${estimated_cost:.2f}")
     print()
     print(f"Mode: {'OVERWRITE originals' if overwrite else 'Create new files (*_searchable.pdf)'}")
     print(f"Skip existing: {'Yes' if skip_existing else 'No'}")
-    print(f"Extraction mode: {mode}")
-    print(f"Output format: {output_format}")
-    if save_plain and output_format == 'markdown':
-        print(f"Plain text: Will save .txt files for PDF injection")
+    if ocr_only:
+        print(f"Operation: OCR only (no text extraction)")
+    else:
+        print(f"Extraction mode: {mode}")
+        print(f"Output format: {output_format}")
     print("=" * 60)
 
     # Show files with errors if any
@@ -169,7 +194,10 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
     # Prompt user to continue (unless auto-confirm)
     if not auto_confirm:
         try:
-            response = input(f"Process {pdfs_to_process} PDFs (~${estimated_cost:.2f})? [y/N]: ")
+            if ocr_only:
+                response = input(f"Process {pdfs_to_process} PDFs with OCR? [y/N]: ")
+            else:
+                response = input(f"Process {pdfs_to_process} PDFs (~${estimated_cost:.2f})? [y/N]: ")
             if response.lower() not in ['y', 'yes']:
                 print("Cancelled.")
                 return
@@ -178,7 +206,10 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
             return
         print()
     else:
-        print(f"Auto-confirming: Processing {pdfs_to_process} PDFs (~${estimated_cost:.2f})")
+        if ocr_only:
+            print(f"Auto-confirming: Processing {pdfs_to_process} PDFs with OCR")
+        else:
+            print(f"Auto-confirming: Processing {pdfs_to_process} PDFs (~${estimated_cost:.2f})")
         print()
 
     processed = 0
@@ -194,11 +225,8 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
         # Determine output paths based on format
         if output_format == 'markdown':
             main_output_file = pdf_file.with_suffix('.md')
-            # For injection, we need plain text
-            txt_file = pdf_file.with_suffix('.txt') if save_plain else None
         else:
             main_output_file = pdf_file.with_suffix('.txt')
-            txt_file = main_output_file  # Same file for plain format
 
         if overwrite:
             # Create temp file, then replace original
@@ -209,59 +237,57 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
             output_pdf = pdf_file.with_stem(f"{pdf_file.stem}_searchable")
             final_pdf = output_pdf
 
-        # Check if already processed (check main output file)
-        if skip_existing and main_output_file.exists():
-            # Check if the file contains API errors
-            try:
-                with open(main_output_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                if contains_api_error(content):
-                    # File has errors, reprocess it
-                    print(f"  ⚠ Reprocessing (API error detected in existing file)")
-                else:
-                    # File is good, skip it
-                    print(f"  ⊙ Skipping (output file exists)")
-                    skipped += 1
-                    continue
-            except Exception:
-                # Can't read file, better to reprocess
-                print(f"  ⚠ Reprocessing (cannot read existing file)")
+        # Check if already processed
+        if not ocr_only:
+            # In normal mode, check if text extraction file exists
+            if skip_existing and main_output_file.exists():
+                # Check if the file contains API errors
+                try:
+                    with open(main_output_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    if contains_api_error(content):
+                        # File has errors, reprocess it
+                        print(f"  ⚠ Reprocessing (API error detected in existing file)")
+                    else:
+                        # File is good, skip it
+                        print(f"  ⊙ Skipping (output file exists)")
+                        skipped += 1
+                        continue
+                except Exception:
+                    # Can't read file, better to reprocess
+                    print(f"  ⚠ Reprocessing (cannot read existing file)")
 
+        # Check if searchable PDF already exists
         if skip_existing and final_pdf.exists() and final_pdf != pdf_file:
             print(f"  ⊙ Skipping (searchable PDF exists)")
             skipped += 1
             continue
 
         try:
-            # Extract text
-            print(f"  → Extracting text...")
+            # Extract text (unless OCR-only mode)
+            if not ocr_only:
+                print(f"  → Extracting text...")
 
-            def progress(page, total):
-                print(f"    Page {page}/{total}", end='\r', flush=True)
+                def progress(page, total):
+                    print(f"    Page {page}/{total}", end='\r', flush=True)
 
-            # Determine which file to use for PDF injection
-            injection_file = txt_file if txt_file else main_output_file
+                num_pages, page_timings, file_time = extract_pdf_text_with_mode(
+                    str(pdf_file),
+                    str(main_output_file),
+                    api_key=api_key,
+                    progress_callback=progress,
+                    mode=mode,
+                    output_format=output_format
+                )
+                total_pages_processed += num_pages
+                total_processing_time += file_time
+                file_timings.append((pdf_file.name, num_pages, file_time))
 
-            num_pages, page_timings, file_time = extract_pdf_text_with_mode(
-                str(pdf_file),
-                str(main_output_file),
-                api_key=api_key,
-                progress_callback=progress,
-                mode=mode,
-                output_format=output_format,
-                plain_output_path=str(txt_file) if txt_file and txt_file != main_output_file else None
-            )
-            total_pages_processed += num_pages
-            total_processing_time += file_time
-            file_timings.append((pdf_file.name, num_pages, file_time))
+                print(f"  ✓ Text extracted: {main_output_file.name} ({file_time:.1f}s, {num_pages} pages)          ")
 
-            print(f"  ✓ Text extracted: {main_output_file.name} ({file_time:.1f}s, {num_pages} pages)          ")
-            if txt_file and txt_file != main_output_file:
-                print(f"  ✓ Plain text saved: {txt_file.name}                    ")
-
-            # Inject into PDF (use plain text file if available, otherwise main output)
-            print(f"  → Creating searchable PDF...")
-            inject_text_to_pdf(str(pdf_file), str(output_pdf), str(injection_file))
+            # Create searchable PDF using OCR
+            print(f"  → Creating searchable PDF with OCR...")
+            inject_text_to_pdf(str(pdf_file), str(output_pdf))
 
             # If overwriting, replace original
             if overwrite:
@@ -322,16 +348,14 @@ def main():
         epilog='''
 Examples:
   # Process all PDFs with markdown output using Claude (default)
+  # Creates .md files for readability + searchable PDFs with OCR
   pdf-batch /path/to/pdfs
 
   # Use Google Gemini instead of Claude
   export GOOGLE_API_KEY='your-key-here'
   pdf-batch --mode=gemini /path/to/pdfs
 
-  # Generate both markdown and plain text files
-  pdf-batch --save-plain /path/to/pdfs
-
-  # Use plain text format only
+  # Use plain text format (faster AI extraction, no markdown)
   pdf-batch --format=plain /path/to/pdfs
 
   # Overwrite original PDFs with searchable versions
@@ -343,14 +367,21 @@ Examples:
   # Skip confirmation prompt (auto-confirm)
   pdf-batch --yes /path/to/pdfs
 
-  # Use local mode (no API key needed)
+  # Use local mode (no API key needed, spaCy only)
   pdf-batch --mode=spacy /path/to/pdfs
+
+  # OCR-only mode: only create searchable PDFs (skip text extraction)
+  # Useful when you already have .md files and just need searchable PDFs
+  pdf-batch --ocr-only /path/to/pdfs
 
 Environment Variables:
   ANTHROPIC_API_KEY    Required for mode=claude. Your Anthropic API key.
   GOOGLE_API_KEY       Required for mode=gemini. Your Google API key.
 
 API keys can also be loaded from a .env file in the current directory.
+
+Note: Searchable PDFs are created using spaCy Layout OCR for accurate text
+positioning. The markdown/text files are separate outputs for readability.
         '''
     )
 
@@ -391,36 +422,40 @@ API keys can also be loaded from a .env file in the current directory.
     )
 
     parser.add_argument(
-        '--save-plain',
-        action='store_true',
-        help='When using markdown format, also save plain .txt files for PDF injection'
-    )
-
-    parser.add_argument(
         '--yes', '-y',
         action='store_true',
         help='Skip confirmation prompt (auto-confirm)'
     )
 
+    parser.add_argument(
+        '--ocr-only',
+        action='store_true',
+        help='Only create searchable PDFs using OCR (skip text extraction). No API key required.'
+    )
+
     args = parser.parse_args()
 
-    # Get API key based on mode
-    if args.mode == 'gemini':
-        api_key = args.api_key or os.environ.get('GOOGLE_API_KEY')
-    else:
-        api_key = args.api_key or os.environ.get('ANTHROPIC_API_KEY')
+    # Get API key based on mode (not needed in OCR-only mode)
+    if not args.ocr_only:
+        if args.mode == 'gemini':
+            api_key = args.api_key or os.environ.get('GOOGLE_API_KEY')
+        else:
+            api_key = args.api_key or os.environ.get('ANTHROPIC_API_KEY')
 
-    # Require API key for AI modes
-    if args.mode == 'claude' and not api_key:
-        print("Error: ANTHROPIC_API_KEY environment variable not set (required for mode=claude)", file=sys.stderr)
-        print("Set it with: export ANTHROPIC_API_KEY='your-key-here'", file=sys.stderr)
-        print("Or pass with: --api-key YOUR_KEY", file=sys.stderr)
-        sys.exit(1)
-    elif args.mode == 'gemini' and not api_key:
-        print("Error: GOOGLE_API_KEY environment variable not set (required for mode=gemini)", file=sys.stderr)
-        print("Set it with: export GOOGLE_API_KEY='your-key-here'", file=sys.stderr)
-        print("Or pass with: --api-key YOUR_KEY", file=sys.stderr)
-        sys.exit(1)
+        # Require API key for AI modes
+        if args.mode == 'claude' and not api_key:
+            print("Error: ANTHROPIC_API_KEY environment variable not set (required for mode=claude)", file=sys.stderr)
+            print("Set it with: export ANTHROPIC_API_KEY='your-key-here'", file=sys.stderr)
+            print("Or pass with: --api-key YOUR_KEY", file=sys.stderr)
+            sys.exit(1)
+        elif args.mode == 'gemini' and not api_key:
+            print("Error: GOOGLE_API_KEY environment variable not set (required for mode=gemini)", file=sys.stderr)
+            print("Set it with: export GOOGLE_API_KEY='your-key-here'", file=sys.stderr)
+            print("Or pass with: --api-key YOUR_KEY", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # In OCR-only mode, no API key needed
+        api_key = None
 
     if not os.path.exists(args.directory):
         print(f"Error: Directory not found: {args.directory}", file=sys.stderr)
@@ -448,7 +483,7 @@ API keys can also be loaded from a .env file in the current directory.
             auto_confirm=args.yes,
             mode=args.mode,
             output_format=args.format,
-            save_plain=args.save_plain
+            ocr_only=args.ocr_only
         )
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")

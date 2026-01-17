@@ -1,85 +1,86 @@
 """
-Inject extracted text into PDFs as searchable layers.
+Inject extracted text into PDFs as searchable layers using spaCy Layout OCR.
 """
 
 import fitz  # PyMuPDF
 
 
-def inject_text_to_pdf(input_pdf, output_pdf, text_file):
+def inject_text_to_pdf(input_pdf, output_pdf):
     """
-    Create a searchable PDF by adding invisible text layer.
+    Create a searchable PDF by adding invisible text layer using OCR.
+
+    This function uses spaCy Layout to OCR the PDF and extract word positions,
+    then injects invisible text at those exact positions for accurate search highlighting.
 
     Args:
         input_pdf: Path to input PDF (scanned, no text layer)
         output_pdf: Path to output PDF (with searchable text)
-        text_file: Path to text file with page markers (=== PAGE N ===)
     """
 
-    # Read the text file with page markers
-    with open(text_file, 'r', encoding='utf-8') as f:
-        full_text = f.read()
-
-    # Split by page markers
-    pages_text = []
-    current_page_text = []
-
-    for line in full_text.split('\n'):
-        if line.startswith('=== PAGE'):
-            if current_page_text:
-                pages_text.append('\n'.join(current_page_text))
-            current_page_text = []
-        else:
-            current_page_text.append(line)
-
-    if current_page_text:
-        pages_text.append('\n'.join(current_page_text))
+    # Load spaCy and spaCy Layout for OCR
+    try:
+        import spacy
+        from spacy_layout import spaCyLayout
+    except ImportError:
+        raise ImportError(
+            "pdf-inject requires spacy-layout. Install with: pip install -e '.[local]' && "
+            "python -m spacy download en_core_web_sm"
+        )
 
     # Open input PDF
     doc = fitz.open(input_pdf)
 
-    # For each page, add the text as invisible annotations
+    # Load spaCy model and process entire PDF with spaCy Layout
+    nlp = spacy.load("en_core_web_sm")
+    layout_extractor = spaCyLayout(nlp)
+    ocr_doc = layout_extractor(input_pdf)
+
+    # For each page, clear existing text and inject OCR-positioned text
     for i, page in enumerate(doc):
-        if i < len(pages_text):
-            text = pages_text[i].strip()
+        # Create a new page from just the images (removes all text)
+        # Get the page's image content as pixmap
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x resolution
 
-            # Add text as hidden layer using PDF text rendering mode
-            # Mode 3 = neither fill nor stroke (invisible)
-            rect = page.rect
+        # Create a new PDF from this image
+        temp_doc = fitz.open()
+        temp_page = temp_doc.new_page(width=page.rect.width, height=page.rect.height)
 
-            # Insert text in tiny font with rendering mode 3 (invisible)
-            # This makes it searchable but not visible
-            fontsize = 1
-            opacity = 0
+        # Insert the pixmap as image
+        temp_page.insert_image(page.rect, pixmap=pix)
 
-            # Split into words and place them across the page
-            words = text.split()
-            x, y = 10, rect.height - 10
-            line_words = []
+        # Replace the current page with the cleaned page
+        doc.delete_page(i)
+        doc.insert_pdf(temp_doc, from_page=0, to_page=0, start_at=i)
+        temp_doc.close()
 
-            for word in words:
-                # Add word to current line
-                line_words.append(word)
-                line = ' '.join(line_words)
+        # Get the newly inserted page
+        page = doc[i]
 
-                # Check if we need to wrap
-                if len(line) * fontsize * 0.5 > rect.width - 20:
-                    # Insert line and move to next
-                    if len(line_words) > 1:
-                        line = ' '.join(line_words[:-1])
-                        page.insert_text((x, y), line, fontsize=fontsize,
-                                       color=(0, 0, 0), render_mode=3)
-                        line_words = [word]
-                        y += fontsize * 1.2
+        # Use OCR word positions for accurate text placement
+        # Filter tokens for current page
+        for token in ocr_doc:
+            # Check if token belongs to current page
+            if hasattr(token, 'page') and token.page == i + 1:  # Pages are 1-indexed in spacy-layout
+                if hasattr(token, 'x0') and hasattr(token, 'y0') and token.text.strip():
+                    # Get bounding box from OCR
+                    x0, y0, x1, y1 = token.x0, token.y0, token.x1, token.y1
 
-                    # Check if we've filled the page
-                    if y > rect.height - 10:
-                        break
+                    # Calculate font size from bounding box height
+                    bbox_height = y1 - y0
+                    fontsize = max(6, bbox_height * 0.75)
 
-            # Insert remaining text
-            if line_words:
-                line = ' '.join(line_words)
-                page.insert_text((x, y), line, fontsize=fontsize,
-                               color=(0, 0, 0), render_mode=3)
+                    # Insert invisible text at the word's position
+                    try:
+                        page.insert_text(
+                            (x0, y1),  # Bottom-left corner of text
+                            token.text,
+                            fontsize=fontsize,
+                            color=(0, 0, 0),
+                            render_mode=3  # Invisible
+                        )
+                    except Exception:
+                        # Skip if insertion fails
+                        pass
 
     # Save with embedded text
     num_pages = len(doc)

@@ -230,7 +230,7 @@ def extract_pdf_text(pdf_path, output_path, api_key, progress_callback=None):
     return extract_pdf_text_with_mode(pdf_path, output_path, api_key=api_key, progress_callback=progress_callback, mode='claude')
 
 
-def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_callback=None, mode='claude', output_format='markdown', plain_output_path=None, provider='claude'):
+def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_callback=None, mode='claude', output_format='markdown', provider='claude'):
     """
     Extract text from PDF using different modes.
 
@@ -241,8 +241,6 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
         progress_callback: Optional callback function for progress updates
         mode: 'claude' (default), 'gemini', or 'spacy'/'local' (layout-based extraction)
         output_format: 'markdown' (default) or 'plain' - controls the extraction format
-        plain_output_path: Optional path to save plain text version (useful for PDF injection)
-                          If provided, will save a plain text version alongside markdown
         provider: 'claude' (default) or 'gemini' - which AI provider to use
 
     mode: 'claude' (default), 'gemini', or 'spacy'/'local' (layout-based extraction using spacy-layout)
@@ -264,7 +262,6 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
         mode = provider  # Keep mode in sync
 
     all_text = []
-    all_text_plain = []  # For dual-output when needed
     page_timings = []  # Track timing for each page
     start_time = time.time()
 
@@ -287,11 +284,6 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
 
             text = extract_text_from_page(client, img_base64, i, output_format=output_format)
             all_text.append(f"=== PAGE {i + 1} ===\n{text}")
-
-            # If dual-output requested, also extract plain version
-            if plain_output_path and output_format == 'markdown':
-                text_plain = extract_text_from_page(client, img_base64, i, output_format='plain')
-                all_text_plain.append(f"=== PAGE {i + 1} ===\n{text_plain}")
 
             page_time = time.time() - page_start
             page_timings.append((i + 1, page_time))
@@ -320,11 +312,6 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
 
             text = extract_text_from_page_gemini(client, img_base64, i, output_format=output_format)
             all_text.append(f"=== PAGE {i + 1} ===\n{text}")
-
-            # If dual-output requested, also extract plain version
-            if plain_output_path and output_format == 'markdown':
-                text_plain = extract_text_from_page_gemini(client, img_base64, i, output_format='plain')
-                all_text_plain.append(f"=== PAGE {i + 1} ===\n{text_plain}")
 
             page_time = time.time() - page_start
             page_timings.append((i + 1, page_time))
@@ -376,17 +363,11 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
     else:
         raise ValueError(f'Unknown extraction mode: {mode}')
 
-    # Write primary output
+    # Write output
     output_text = "\n\n".join(all_text)
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(output_text)
-
-    # Write plain text output if requested
-    if plain_output_path and all_text_plain:
-        output_text_plain = "\n\n".join(all_text_plain)
-        with open(plain_output_path, 'w', encoding='utf-8') as f:
-            f.write(output_text_plain)
 
     total_time = time.time() - start_time
     return total_pages, page_timings, total_time

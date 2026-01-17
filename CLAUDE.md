@@ -30,6 +30,7 @@ cp .env.example .env
 ### Testing Single Files
 ```bash
 # Extract text using Claude (API key loaded from .env file)
+# Creates markdown file for human readability
 pdf-extract input.pdf output.md
 
 # Extract using Gemini (API key loaded from .env file)
@@ -42,27 +43,26 @@ pdf-extract input.pdf output.md
 # Extract using local spaCy mode (no API key)
 pdf-extract input.pdf output.txt --mode=spacy
 
-# Dual-output: markdown + plain text for PDF injection
-pdf-extract input.pdf output.md --plain-output=output.txt
-
-# Inject text into PDF to make it searchable
-pdf-inject input.pdf searchable.pdf extracted.txt
+# Create searchable PDF using spaCy Layout OCR
+# (independent of markdown extraction - uses OCR for positioning)
+pdf-inject input.pdf searchable.pdf
 ```
 
 ### Batch Processing
 ```bash
-# Process entire directory tree (creates .md and *_searchable.pdf)
-# API key loaded from .env file
+# Process entire directory tree
+# Creates .md files (human-readable) + *_searchable.pdf (OCR-based)
 pdf-batch /path/to/pdfs
 
 # Batch with Gemini (API key loaded from .env file)
 pdf-batch --mode=gemini /path/to/pdfs
 
-# Batch with plain text output
+# Batch with plain text output (simpler extraction)
 pdf-batch --format=plain /path/to/pdfs
 
-# Batch with dual output (markdown + plain text)
-pdf-batch --save-plain /path/to/pdfs
+# OCR-only mode: only create searchable PDFs (no API key needed)
+# Useful when you already have .md files and just want searchable PDFs
+pdf-batch --ocr-only /path/to/pdfs
 
 # Skip confirmation prompt
 pdf-batch --yes /path/to/pdfs
@@ -97,12 +97,19 @@ python -m build
   - `spacy`/`local`: Offline spaCy Layout OCR (no API cost)
 - `contains_api_error()` - Detects API errors in extracted text using regex patterns (used for auto-retry logic in batch mode)
 - **Output formats**: `markdown` (preserves structure with headings/lists) or `plain` (simple text)
-- **Dual-output support**: Can generate both markdown and plain text in a single API call via `plain_output_path` parameter
+- **Purpose**: Generates human-readable text files, NOT used for PDF injection
 
-**[pdf_text_extractor/injector.py](pdf_text_extractor/injector.py)** - PDF text layer injection
-- `inject_text_to_pdf()` - Creates searchable PDFs by adding invisible text layer (render_mode=3)
-- Parses page markers (`=== PAGE N ===`) from extracted text files
-- Uses PyMuPDF to insert invisible text at fontsize=1 with word wrapping
+**[pdf_text_extractor/injector.py](pdf_text_extractor/injector.py)** - PDF text layer injection via OCR
+- `inject_text_to_pdf(input_pdf, output_pdf)` - Creates searchable PDFs by adding invisible text layer (render_mode=3)
+- Uses spaCy Layout to OCR the PDF and get exact word positions
+- Strips existing text layer by converting pages to images before injection
+- Inserts invisible text at precise coordinates for accurate search highlighting
+- **Independent of extracted markdown** - OCRs the PDF directly for positioning
+
+**[pdf_text_extractor/utils.py](pdf_text_extractor/utils.py)** - Shared utilities
+- `markdown_to_plain_text()` - Converts markdown to plain text using regex
+  - Removes heading markers (`#`), bold/italic (`**`, `*`), links, lists, tables, etc.
+  - Currently unused (kept for potential future use)
 
 **[pdf_text_extractor/batch.py](pdf_text_extractor/batch.py)** - Batch processing engine
 - `find_pdfs()` - Recursive PDF discovery using `pathlib.rglob()`
@@ -110,19 +117,26 @@ python -m build
 - `batch_process()` - Main loop with error detection, auto-reprocessing, and progress tracking
 - **Error detection**: Scans existing `.txt`/`.md` files for API errors and automatically reprocesses them
 - **Skip logic**: By default skips files with existing outputs unless `--no-skip` or errors detected
-- **Dual-output**: When `--save-plain` is used with markdown format, saves both `.md` and `.txt` files
+- **Two-phase processing**: First extracts text with AI, then creates searchable PDF with OCR
 
 **[pdf_text_extractor/cli.py](pdf_text_extractor/cli.py)** - CLI for `pdf-extract` command
-- Argument parsing for `--mode`, `--format`, `--plain-output`
+- Argument parsing for `--mode`, `--format`
 - API key resolution: checks CLI args → environment variables → `.env` file (ANTHROPIC_API_KEY / GOOGLE_API_KEY)
 - Uses `python-dotenv` to automatically load `.env` file at startup
 
 **[pdf_text_extractor/inject.py](pdf_text_extractor/inject.py)** - CLI for `pdf-inject` command
-- Simple wrapper around `inject_text_to_pdf()` with argument validation
+- Simple wrapper around `inject_text_to_pdf()` with validation
+- Requires spaCy Layout OCR installation (`pip install -e '.[local]'`)
 
 ### Key Design Patterns
 
-**Page Markers**: All extracted text uses `=== PAGE N ===` delimiters for multi-page PDFs. This format is parsed by the injector to map text back to correct pages.
+**Separation of Concerns**: The tool separates two distinct tasks:
+1. **Text extraction** (pdf-extract): AI-powered extraction for human-readable files (.md or .txt)
+2. **PDF injection** (pdf-inject): spaCy Layout OCR for accurate searchable PDF creation
+
+These are independent - the markdown files are NOT used for PDF injection. The injector OCRs the PDF directly for precise word positioning.
+
+**Page Markers**: Extracted text uses `=== PAGE N ===` delimiters for multi-page PDFs. Used for display purposes only, not for PDF injection.
 
 **Error Detection & Retry**: The batch processor checks extracted files for API error patterns (credit balance, rate limits, authentication errors) and automatically reprocesses failed pages. See `contains_api_error()` in [extractor.py:13-40](pdf_text_extractor/extractor.py#L13-L40).
 
@@ -130,7 +144,7 @@ python -m build
 - AI vision (Claude/Gemini): Converts to images → API calls → text extraction
 - Local (spaCy): Direct PDF text extraction with OCR fallback for scanned docs
 
-**Invisible Text Layer**: PDF injection uses PyMuPDF's render_mode=3 (neither fill nor stroke) to create searchable but invisible text. Text is placed at tiny fontsize with word wrapping to cover the page area.
+**OCR-Based Text Positioning**: PDF injection uses spaCy Layout to OCR the PDF and extract exact word bounding boxes. Text is inserted at precise coordinates with calculated font sizes matching the original. Uses PyMuPDF's render_mode=3 (neither fill nor stroke) for invisible text.
 
 ## Python API
 
@@ -140,14 +154,14 @@ import os
 
 api_key = os.environ['ANTHROPIC_API_KEY']
 
-# Extract text
+# Extract text for human readability
 def progress(page, total):
     print(f"Processing page {page}/{total}")
 
-extract_pdf_text('input.pdf', 'output.txt', api_key, progress)
+extract_pdf_text('input.pdf', 'output.md', api_key, progress)
 
-# Inject into PDF
-inject_text_to_pdf('input.pdf', 'searchable.pdf', 'output.txt')
+# Create searchable PDF using OCR (independent of markdown)
+inject_text_to_pdf('input.pdf', 'searchable.pdf')
 ```
 
 ## Important Implementation Notes
@@ -172,10 +186,22 @@ PDF pages are rendered at 2x resolution (Matrix(2, 2)) in `pdf_to_images()` for 
 The batch processor will stop and report errors when API issues are detected mid-extraction. This prevents incomplete/corrupted output files. Check the error patterns in `contains_api_error()` if adding new error detection.
 
 ### Output Format Behavior
-- `--format=markdown`: Creates `.md` files, preserves document structure (headings, lists, tables)
+- `--format=markdown`: Creates `.md` files, preserves document structure (headings, lists, tables) - **recommended for readability**
 - `--format=plain`: Creates `.txt` files, simple text extraction
-- `--save-plain`: When using markdown, also generates `.txt` for PDF injection (best of both worlds)
-- PDF injection always uses plain text (markdown formatting would appear as literal text in PDF)
+- Both formats are for human consumption only
+- PDF injection is completely independent - uses spaCy Layout OCR regardless of extraction format
+
+### PDF Injection Architecture
+The injection process:
+1. OCRs the original PDF using spaCy Layout to get word bounding boxes
+2. Strips any existing text layer by converting pages to images
+3. Inserts invisible text at exact OCR coordinates with matching font sizes
+4. Saves searchable PDF with accurate highlighting
+
+This architecture ensures:
+- Search highlighting points to correct locations (not bottom of page)
+- No markdown symbols in searchable text
+- Works with any PDF, regardless of whether it was processed with pdf-extract
 
 ### Batch Processing Skip Logic
 The batch processor skips files if:

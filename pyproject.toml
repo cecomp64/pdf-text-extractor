@@ -23,7 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 local = [
     "spacy>=3.0.0",
-    "spacy-layout>=0.1.0",
+    "spacy-layout>=0.0.12",
 ]
 
 [project.scripts]

@@ -17,12 +17,11 @@ def main():
     if len(sys.argv) < 3:
         print("pdf-extract - Vision-based PDF text extraction using AI")
         print()
-        print("Usage: pdf-extract <input.pdf> <output.txt> [api_key] [options]")
+        print("Usage: pdf-extract <input.pdf> <output.md> [api_key] [options]")
         print()
         print("Options:")
         print("  --mode=claude|gemini|spacy   Extraction mode (default: claude)")
         print("  --format=markdown|plain      Output format (default: markdown)")
-        print("  --plain-output=file.txt      Also save plain text version (for PDF injection)")
         print()
         print("Extracts text from scanned PDFs using AI vision or local layout/OCR.")
         print("Requires ANTHROPIC_API_KEY for Claude or GOOGLE_API_KEY for Gemini.")
@@ -30,7 +29,7 @@ def main():
         print("Local mode (spacy) does not require an API key.")
         print()
         print("Examples:")
-        print("  # Using Claude (default)")
+        print("  # Using Claude (default) - generates markdown for readability")
         print("  export ANTHROPIC_API_KEY='your-key-here'")
         print("  pdf-extract scan.pdf output.md")
         print()
@@ -39,9 +38,11 @@ def main():
         print("  pdf-extract scan.pdf output.md --mode=gemini")
         print()
         print("  # Other options")
-        print("  pdf-extract scan.pdf output.md --format=plain")
-        print("  pdf-extract scan.pdf output.md --plain-output=plain.txt")
+        print("  pdf-extract scan.pdf output.txt --format=plain")
         print("  pdf-extract scan.pdf output.txt --mode=spacy")
+        print()
+        print("Note: To create searchable PDFs, use pdf-inject with spaCy OCR:")
+        print("  pdf-inject scan.pdf searchable.pdf")
         print()
         print("The output file will contain page markers like:")
         print("  === PAGE 1 ===")
@@ -52,11 +53,10 @@ def main():
 
     input_pdf = sys.argv[1]
     output_txt = sys.argv[2]
-    # Parse optional args: api_key, --mode, --format, --plain-output
+    # Parse optional args: api_key, --mode, --format
     api_key = None
     mode = 'claude'
     output_format = 'markdown'
-    plain_output_path = None
 
     # Collect positional args and flags
     other_args = sys.argv[3:]
@@ -80,15 +80,6 @@ def main():
                 i += 1
             else:
                 print('Error: --format requires a value', file=sys.stderr)
-                sys.exit(1)
-        elif arg.startswith('--plain-output='):
-            plain_output_path = arg.split('=', 1)[1]
-        elif arg == '--plain-output' or arg == '-p':
-            if i + 1 < len(other_args):
-                plain_output_path = other_args[i + 1]
-                i += 1
-            else:
-                print('Error: --plain-output requires a value', file=sys.stderr)
                 sys.exit(1)
         else:
             # treat as api_key if present
@@ -117,9 +108,7 @@ def main():
         print("Or pass as 3rd argument: pdf-extract input.pdf output.txt YOUR_API_KEY", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Converting PDF to images: {input_pdf} (mode={mode}, format={output_format})")
-    if plain_output_path:
-        print(f"Will also generate plain text output: {plain_output_path}")
+    print(f"Extracting text: {input_pdf} (mode={mode}, format={output_format})")
 
     def progress(page, total):
         print(f"  Processing page {page}/{total}...", flush=True)
@@ -131,12 +120,9 @@ def main():
             api_key=api_key,
             progress_callback=progress,
             mode=mode,
-            output_format=output_format,
-            plain_output_path=plain_output_path
+            output_format=output_format
         )
         print(f"\n✓ Text extracted successfully: {output_txt}")
-        if plain_output_path:
-            print(f"✓ Plain text version saved: {plain_output_path}")
         print(f"  Total pages: {total_pages}")
         print(f"  Total time: {total_time:.1f}s")
         if page_timings:
