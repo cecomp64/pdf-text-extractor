@@ -107,7 +107,7 @@ def estimate_cost(pdf_files, skip_existing=True, mode='claude'):
     return total_pdfs, len(pdfs_to_process), pdfs_with_errors, total_pages, estimated_cost
 
 
-def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_confirm=False, mode='claude', output_format='markdown', ocr_only=False):
+def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_confirm=False, mode='claude', output_format='markdown', ocr_only=False, skip_ocr=False):
     """
     Batch process all PDFs in a directory tree.
 
@@ -120,6 +120,7 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
         mode: Extraction mode ('claude', 'gemini', or 'spacy')
         output_format: Output format ('markdown' or 'plain')
         ocr_only: If True, only create searchable PDFs using OCR (skip text extraction)
+        skip_ocr: If True, only do text extraction (skip creating searchable PDFs)
     """
 
     pdf_files = find_pdfs(directory)
@@ -168,10 +169,15 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
     if not ocr_only:
         print(f"Estimated cost:          ${estimated_cost:.2f}")
     print()
-    print(f"Mode: {'OVERWRITE originals' if overwrite else 'Create new files (*_searchable.pdf)'}")
+    if not skip_ocr:
+        print(f"Mode: {'OVERWRITE originals' if overwrite else 'Create new files (*_searchable.pdf)'}")
     print(f"Skip existing: {'Yes' if skip_existing else 'No'}")
     if ocr_only:
         print(f"Operation: OCR only (no text extraction)")
+    elif skip_ocr:
+        print(f"Operation: Text extraction only (no searchable PDFs)")
+        print(f"Extraction mode: {mode}")
+        print(f"Output format: {output_format}")
     else:
         print(f"Extraction mode: {mode}")
         print(f"Output format: {output_format}")
@@ -285,16 +291,17 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
 
                 print(f"  ✓ Text extracted: {main_output_file.name} ({file_time:.1f}s, {num_pages} pages)          ")
 
-            # Create searchable PDF using OCR
-            print(f"  → Creating searchable PDF with OCR...")
-            inject_text_to_pdf(str(pdf_file), str(output_pdf))
+            # Create searchable PDF using OCR (unless skip_ocr is set)
+            if not skip_ocr:
+                print(f"  → Creating searchable PDF with OCR...")
+                inject_text_to_pdf(str(pdf_file), str(output_pdf))
 
-            # If overwriting, replace original
-            if overwrite:
-                os.replace(str(output_pdf), str(final_pdf))
-                print(f"  ✓ Updated: {final_pdf.name}")
-            else:
-                print(f"  ✓ Created: {final_pdf.name}")
+                # If overwriting, replace original
+                if overwrite:
+                    os.replace(str(output_pdf), str(final_pdf))
+                    print(f"  ✓ Updated: {final_pdf.name}")
+                else:
+                    print(f"  ✓ Created: {final_pdf.name}")
 
             processed += 1
 
@@ -374,6 +381,10 @@ Examples:
   # Useful when you already have .md files and just need searchable PDFs
   pdf-batch --ocr-only /path/to/pdfs
 
+  # Skip OCR mode: only extract text (no searchable PDFs)
+  # Useful when you only want .md files for reading
+  pdf-batch --skip-ocr /path/to/pdfs
+
 Environment Variables:
   ANTHROPIC_API_KEY    Required for mode=claude. Your Anthropic API key.
   GOOGLE_API_KEY       Required for mode=gemini. Your Google API key.
@@ -433,7 +444,18 @@ positioning. The markdown/text files are separate outputs for readability.
         help='Only create searchable PDFs using OCR (skip text extraction). No API key required.'
     )
 
+    parser.add_argument(
+        '--skip-ocr',
+        action='store_true',
+        help='Only extract text (skip creating searchable PDFs). Useful for generating .md files only.'
+    )
+
     args = parser.parse_args()
+
+    # Validate mutually exclusive flags
+    if args.ocr_only and args.skip_ocr:
+        print("Error: --ocr-only and --skip-ocr are mutually exclusive", file=sys.stderr)
+        sys.exit(1)
 
     # Get API key based on mode (not needed in OCR-only mode)
     if not args.ocr_only:
@@ -483,7 +505,8 @@ positioning. The markdown/text files are separate outputs for readability.
             auto_confirm=args.yes,
             mode=args.mode,
             output_format=args.format,
-            ocr_only=args.ocr_only
+            ocr_only=args.ocr_only,
+            skip_ocr=args.skip_ocr
         )
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")

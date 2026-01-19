@@ -64,6 +64,10 @@ pdf-batch --format=plain /path/to/pdfs
 # Useful when you already have .md files and just want searchable PDFs
 pdf-batch --ocr-only /path/to/pdfs
 
+# Skip OCR mode: only extract text (no searchable PDFs)
+# Useful when you only want .md files for reading
+pdf-batch --skip-ocr /path/to/pdfs
+
 # Skip confirmation prompt
 pdf-batch --yes /path/to/pdfs
 
