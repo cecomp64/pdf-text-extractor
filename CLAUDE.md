@@ -187,7 +187,17 @@ inject_text_to_pdf('input.pdf', 'searchable.pdf')
 PDF pages are rendered at 2x resolution (Matrix(2, 2)) in `pdf_to_images()` for better OCR quality. Higher resolution = better accuracy but larger image size and higher API costs.
 
 ### Error Handling
-The batch processor will stop and report errors when API issues are detected mid-extraction. This prevents incomplete/corrupted output files. Check the error patterns in `contains_api_error()` if adding new error detection.
+**Page-level error handling**: When a page fails during extraction (API errors, rate limits, etc.), the extractor will:
+- Skip the failed page and continue processing remaining pages
+- Include a warning at the beginning of the output file listing failed pages
+- Only create output if at least one page succeeds
+- Raise an error if ALL pages fail
+
+This allows partial document recovery instead of failing the entire extraction. For example, if page 5 fails in an 8-page document, you'll still get a markdown file with pages 1-4 and 6-8.
+
+**Batch processing**: The batch processor will continue processing other PDFs even if one fails completely. It tracks successes, skips, and errors separately in the summary.
+
+Check the error patterns in `contains_api_error()` if adding new error detection.
 
 ### Output Format Behavior
 - `--format=markdown`: Creates `.md` files, preserves document structure (headings, lists, tables) - **recommended for readability**

@@ -263,6 +263,7 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
 
     all_text = []
     page_timings = []  # Track timing for each page
+    failed_pages = []  # Track failed page numbers
     start_time = time.time()
 
     if mode == 'claude' or provider == 'claude':
@@ -283,14 +284,17 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
                 progress_callback(i + 1, total_pages)
 
             text = extract_text_from_page(client, img_base64, i, output_format=output_format)
-            all_text.append(f"=== PAGE {i + 1} ===\n{text}")
 
             page_time = time.time() - page_start
             page_timings.append((i + 1, page_time))
 
             # Check for API errors after each page
             if contains_api_error(text):
-                raise RuntimeError(f"API error detected on page {i + 1}. Stopping extraction to prevent incomplete results. Error: {text}")
+                failed_pages.append(i + 1)
+                # Skip this page but continue with the rest
+                continue
+
+            all_text.append(f"<!-- PAGE {i + 1} -->\n{text}")
 
     elif mode == 'gemini' or provider == 'gemini':
         if not api_key:
@@ -311,14 +315,17 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
                 progress_callback(i + 1, total_pages)
 
             text = extract_text_from_page_gemini(client, img_base64, i, output_format=output_format)
-            all_text.append(f"=== PAGE {i + 1} ===\n{text}")
 
             page_time = time.time() - page_start
             page_timings.append((i + 1, page_time))
 
             # Check for API errors after each page
             if contains_api_error(text):
-                raise RuntimeError(f"API error detected on page {i + 1}. Stopping extraction to prevent incomplete results. Error: {text}")
+                failed_pages.append(i + 1)
+                # Skip this page but continue with the rest
+                continue
+
+            all_text.append(f"<!-- PAGE {i + 1} -->\n{text}")
 
     elif mode in ('spacy', 'local'):
         # Use spacy-layout for PDF text extraction with layout awareness
@@ -363,8 +370,18 @@ def extract_pdf_text_with_mode(pdf_path, output_path, api_key=None, progress_cal
     else:
         raise ValueError(f'Unknown extraction mode: {mode}')
 
-    # Write output
+    # Check if all pages failed
+    if not all_text:
+        error_msg = f"All pages failed during extraction. Failed pages: {', '.join(map(str, failed_pages))}"
+        raise RuntimeError(error_msg)
+
+    # Write output with warnings about failed pages
     output_text = "\n\n".join(all_text)
+
+    # Add warning about failed pages at the beginning if any
+    if failed_pages:
+        warning = f"⚠️  WARNING: The following pages failed to extract and were skipped: {', '.join(map(str, failed_pages))}\n\n"
+        output_text = warning + output_text
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(output_text)

@@ -289,7 +289,18 @@ def batch_process(directory, api_key, overwrite=False, skip_existing=True, auto_
                 total_processing_time += file_time
                 file_timings.append((pdf_file.name, num_pages, file_time))
 
-                print(f"  ✓ Text extracted: {main_output_file.name} ({file_time:.1f}s, {num_pages} pages)          ")
+                # Check if file has warnings about failed pages
+                try:
+                    with open(main_output_file, 'r', encoding='utf-8') as f:
+                        first_line = f.readline()
+                        if first_line.startswith('⚠️  WARNING:'):
+                            print(f"  ⚠ Text extracted with warnings: {main_output_file.name} ({file_time:.1f}s, {num_pages} pages)          ")
+                            print(f"    {first_line.strip()}")
+                        else:
+                            print(f"  ✓ Text extracted: {main_output_file.name} ({file_time:.1f}s, {num_pages} pages)          ")
+                except Exception:
+                    # If we can't read the file, just show success message
+                    print(f"  ✓ Text extracted: {main_output_file.name} ({file_time:.1f}s, {num_pages} pages)          ")
 
             # Create searchable PDF using OCR (unless skip_ocr is set)
             if not skip_ocr:
